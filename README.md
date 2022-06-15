@@ -27,7 +27,7 @@ func main() {
 }
 
 func hello(id int) func() {
-    return func () {
+    return func() {
         fmt.Println("hello", id)
         time.Sleep(2 * time.Second)
     }
