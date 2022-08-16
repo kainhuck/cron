@@ -8,8 +8,6 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// 用于定时同步数据
-
 type Cron struct {
 	c      *cron.Cron
 	jobMap sync.Map
@@ -55,6 +53,18 @@ func (s *Cron) SetStatus(id int, status uint) {
 	defer s.lock.Unlock()
 
 	s.status.Store(id, status)
+}
+
+// Call 调用该方法会立马执行目标函数
+func (s *Cron) Call(id int) {
+	f, ok := s.jobMap.Load(id)
+	if !ok {
+		return
+	}
+	ff, ok := f.(func())
+	if ok {
+		ff()
+	}
 }
 
 // AddJob 添加(更新)任务
