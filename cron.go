@@ -175,6 +175,12 @@ func (s *Cron) AddJob(spec string, f func(), options ...Option) (id int) {
 	if ok {
 		s.RemoveJob(id)
 	}
+
+	entryId, err = s.c.AddFunc(spec, ff)
+	if err != nil {
+		return
+	}
+
 	s.entry.Store(id, &entry{
 		id:     entryId,
 		status: StatusReady,
@@ -183,11 +189,6 @@ func (s *Cron) AddJob(spec string, f func(), options ...Option) (id int) {
 
 	if opt.Immediately {
 		go ff()
-	}
-
-	entryId, err = s.c.AddFunc(spec, ff)
-	if err != nil {
-		return
 	}
 
 	return id
