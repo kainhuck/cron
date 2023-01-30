@@ -3,16 +3,24 @@ package cron
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 
 	"github.com/robfig/cron/v3"
 )
 
+type entry struct {
+	id     cron.EntryID
+	status uint
+	f      func()
+}
+
 type Cron struct {
 	c      *cron.Cron
-	jobMap sync.Map
-	status sync.Map
+	entry  sync.Map
 	lock   sync.RWMutex
+	idLock sync.Mutex
+	nextID int
 }
 
 const (
@@ -23,60 +31,133 @@ const (
 type RunMode uint
 
 const (
-	// ModeTimeFirst 优先满足定时性
-	ModeTimeFirst RunMode = iota
 	// ModeJobSerial 任务串行
-	ModeJobSerial
+	//   有一种情况：比如有个一分钟执行一次的定时任务，但是执行的任务比较耗时（2分钟），这种情况下
+	//   等到下一个执行周期到来是，上一个任务还没执行完成，如果选择 ModeJobSerial 则会跳过本次
+	//   任务执行，保证所有的任务都是串行执行，同理如果选择 ModeTimeFirst 则会继续执行本次任务
+	ModeJobSerial RunMode = iota
+	// ModeTimeFirst 优先满足定时性
+	ModeTimeFirst
 )
+
+type Option struct {
+	// RunMode 运行模式
+	//   默认 ModeJobSerial
+	RunMode RunMode
+	// Immediately 是否立即执行，立即执行指的是在添加任务时就执行一次
+	//   默认 false
+	Immediately bool
+	// Random 随机模式
+	//   正常情况下，比如添加一个小时级别的任务，那么任务的执行时机在
+	//   每个小时的0分0秒调用，如果有多个小时任务则可能会照成在0分0秒
+	//   时的一个峰值，将该配置设置为 true 那么添加任务时会随机选择某
+	//   个小时的x分y秒执行，避免所有任务挤在一起，其他级别的任务同理
+	Random bool // 默认 false
+	// Recover 如果为true则捕获panic
+	Recover bool // 默认 true
+}
+
+func (o Option) apply(o1 Option) Option {
+	o.RunMode = o1.RunMode
+	o.Immediately = o.Immediately || o1.Immediately
+	o.Random = o.Random || o1.Random
+	o.Recover = o.Recover || o1.Recover
+	return o
+}
+
+var defaultOpt = Option{
+	RunMode:     ModeJobSerial,
+	Immediately: false,
+	Random:      false,
+	Recover:     true,
+}
+
+func applyOptions(opts ...Option) Option {
+	opt := defaultOpt
+	for _, o := range opts {
+		opt = opt.apply(o)
+	}
+
+	return opt
+}
 
 func NewCron() *Cron {
 	return &Cron{
 		c:      cron.New(cron.WithSeconds()),
-		jobMap: sync.Map{},
-		status: sync.Map{},
+		entry:  sync.Map{},
 		lock:   sync.RWMutex{},
+		idLock: sync.Mutex{},
 	}
 }
 
 func (s *Cron) GetStatus(id int) uint {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
-	status, ok := s.status.Load(id)
+	entryI, ok := s.entry.Load(id)
 	if !ok {
 		return StatusReady
 	}
-	return status.(uint)
+	return entryI.(*entry).status
 }
 
+// SetStatus 设置当前的任务状态，
+// 不推荐手动调用，存在风险
 func (s *Cron) SetStatus(id int, status uint) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	entryI, ok := s.entry.Load(id)
+	if !ok {
+		return
+	}
+	e := entryI.(*entry)
+	e.status = status
+	s.entry.Store(id, e)
+}
 
-	s.status.Store(id, status)
+func (s *Cron) genID() int {
+	s.idLock.Lock()
+	defer s.idLock.Unlock()
+	s.nextID++
+	return s.nextID
 }
 
 // Call 调用该方法会立马执行目标函数
 func (s *Cron) Call(id int) {
-	f, ok := s.jobMap.Load(id)
+	entryI, ok := s.entry.Load(id)
 	if !ok {
 		return
 	}
-	ff, ok := f.(func())
+	e, ok := entryI.(*entry)
 	if ok {
-		ff()
+		e.f()
 	}
 }
 
 // AddJob 添加(更新)任务
-func (s *Cron) AddJob(id int, spec string, f func(), mode RunMode, immediately ...bool) {
+// 返回的 ID 可用于操作该定时任务（删除，调用 ...）
+func (s *Cron) AddJob(spec string, f func(), options ...Option) (id int) {
 	var (
 		entryId cron.EntryID
 		err     error
+		ff      func()
+		opt     = applyOptions(options...)
 	)
+	id = s.genID()
 
-	var ff func()
+	if opt.Recover {
+		var f1 = f
+		f = func() {
+			defer func() {
+				err := recover()
+				if err != nil {
+					fmt.Printf("Recover:Job(%v):Err(%v)\n", id, err)
+				}
+			}()
+			f1()
+		}
+	}
 
-	switch mode {
+	switch opt.RunMode {
 	case ModeJobSerial:
 		ff = func() {
 			if s.GetStatus(id) == StatusRunning {
@@ -90,7 +171,17 @@ func (s *Cron) AddJob(id int, spec string, f func(), mode RunMode, immediately .
 		ff = f
 	}
 
-	if len(immediately) > 0 {
+	_, ok := s.entry.Load(id)
+	if ok {
+		s.RemoveJob(id)
+	}
+	s.entry.Store(id, &entry{
+		id:     entryId,
+		status: StatusReady,
+		f:      ff,
+	})
+
+	if opt.Immediately {
 		go ff()
 	}
 
@@ -99,73 +190,84 @@ func (s *Cron) AddJob(id int, spec string, f func(), mode RunMode, immediately .
 		return
 	}
 
-	_, ok := s.jobMap.Load(id)
-	if ok {
-		s.RemoveJob(id)
-	}
-	s.jobMap.Store(id, entryId)
+	return id
 }
 
 // AddSecondJob 添加秒级任务
-func (s *Cron) AddSecondJob(id int, sec int, f func(), mode RunMode, immediately ...bool) {
+func (s *Cron) AddSecondJob(sec int, f func(), options ...Option) (id int) {
 	if sec <= 0 || sec >= 60 {
 		return
 	}
 
 	spec := fmt.Sprintf("*/%d * * * * *", sec)
 
-	s.AddJob(id, spec, f, mode, immediately...)
+	return s.AddJob(spec, f, options...)
 }
 
 // AddMinuteJob 添加分钟任务
-func (s *Cron) AddMinuteJob(id int, min int, f func(), mode RunMode, immediately ...bool) {
+func (s *Cron) AddMinuteJob(min int, f func(), options ...Option) (id int) {
 	if min <= 0 || min >= 60 {
 		return
 	}
-
+	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 */%d * * * *", min)
 
-	s.AddJob(id, spec, f, mode, immediately...)
+	if opt.Random {
+		spec = fmt.Sprintf("%d */%d * * * *", rand.Intn(60), min)
+	}
+
+	return s.AddJob(spec, f, options...)
 }
 
 // AddHourJob 添加小时任务
-func (s *Cron) AddHourJob(id int, hour int, f func(), mode RunMode, immediately ...bool) {
+func (s *Cron) AddHourJob(hour int, f func(), options ...Option) (id int) {
 	if hour <= 0 || hour >= 24 {
 		return
 	}
-
+	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 0 */%d * * *", hour)
 
-	s.AddJob(id, spec, f, mode, immediately...)
+	if opt.Random {
+		spec = fmt.Sprintf("%d %d */%d * * *", rand.Intn(60), rand.Intn(60), hour)
+	}
+
+	return s.AddJob(spec, f, options...)
 }
 
-func (s *Cron) AddDayJob(id int, day int, f func(), mode RunMode, immediately ...bool) {
+func (s *Cron) AddDayJob(day int, f func(), options ...Option) (id int) {
 	if day <= 0 || day >= 31 {
 		return
 	}
-
+	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 0 0 */%d * *", day)
 
-	s.AddJob(id, spec, f, mode, immediately...)
+	if opt.Random {
+		spec = fmt.Sprintf("%d %d %d */%d * *", rand.Intn(60), rand.Intn(60), rand.Intn(24), day)
+	}
+
+	return s.AddJob(spec, f, options...)
 }
 
-func (s *Cron) AddMonthJob(id int, mon int, f func(), mode RunMode, immediately ...bool) {
+func (s *Cron) AddMonthJob(mon int, f func(), options ...Option) (id int) {
 	if mon <= 0 || mon >= 12 {
 		return
 	}
-
+	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 0 0 0 */%d *", mon)
 
-	s.AddJob(id, spec, f, mode, immediately...)
+	if opt.Random {
+		spec = fmt.Sprintf("%d %d %d %d */%d *", rand.Intn(60), rand.Intn(60), rand.Intn(24), rand.Intn(29), mon)
+	}
+
+	return s.AddJob(spec, f, options...)
 }
 
 // RemoveJob 删除任务
 func (s *Cron) RemoveJob(id int) {
-	eid, ok := s.jobMap.Load(id)
+	eid, ok := s.entry.Load(id)
 	if ok {
-		s.c.Remove(eid.(cron.EntryID))
-		s.jobMap.Delete(id)
-		s.status.Delete(id)
+		s.c.Remove(eid.(*entry).id)
+		s.entry.Delete(id)
 	}
 }
 
