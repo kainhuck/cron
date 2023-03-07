@@ -178,7 +178,7 @@ func (s *Cron) AddJob(spec string, f func(), options ...Option) (id int) {
 
 	entryId, err = s.c.AddFunc(spec, ff)
 	if err != nil {
-		return
+		return -1
 	}
 
 	s.entry.Store(id, &entry{
@@ -194,10 +194,10 @@ func (s *Cron) AddJob(spec string, f func(), options ...Option) (id int) {
 	return id
 }
 
-// AddSecondJob 添加秒级任务
+// AddSecondJob 添加秒级任务 0-59
 func (s *Cron) AddSecondJob(sec int, f func(), options ...Option) (id int) {
-	if sec <= 0 || sec >= 60 {
-		return
+	if sec < 0 || sec > 59 {
+		sec = 59
 	}
 
 	spec := fmt.Sprintf("*/%d * * * * *", sec)
@@ -205,11 +205,12 @@ func (s *Cron) AddSecondJob(sec int, f func(), options ...Option) (id int) {
 	return s.AddJob(spec, f, options...)
 }
 
-// AddMinuteJob 添加分钟任务
+// AddMinuteJob 添加分钟任务 0-59
 func (s *Cron) AddMinuteJob(min int, f func(), options ...Option) (id int) {
-	if min <= 0 || min >= 60 {
-		return
+	if min < 0 || min > 59 {
+		min = 59
 	}
+
 	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 */%d * * * *", min)
 
@@ -220,11 +221,12 @@ func (s *Cron) AddMinuteJob(min int, f func(), options ...Option) (id int) {
 	return s.AddJob(spec, f, options...)
 }
 
-// AddHourJob 添加小时任务
+// AddHourJob 添加小时任务 0-23
 func (s *Cron) AddHourJob(hour int, f func(), options ...Option) (id int) {
-	if hour <= 0 || hour >= 24 {
-		return
+	if hour < 0 || hour > 23 {
+		hour = 23
 	}
+
 	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 0 */%d * * *", hour)
 
@@ -235,9 +237,10 @@ func (s *Cron) AddHourJob(hour int, f func(), options ...Option) (id int) {
 	return s.AddJob(spec, f, options...)
 }
 
+// AddDayJob 添加天任务 1-31
 func (s *Cron) AddDayJob(day int, f func(), options ...Option) (id int) {
-	if day <= 0 || day >= 31 {
-		return
+	if day < 1 || day > 31 {
+		day = 31
 	}
 	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 0 0 */%d * *", day)
@@ -249,15 +252,31 @@ func (s *Cron) AddDayJob(day int, f func(), options ...Option) (id int) {
 	return s.AddJob(spec, f, options...)
 }
 
+// AddMonthJob 添加月任务 0-12
 func (s *Cron) AddMonthJob(mon int, f func(), options ...Option) (id int) {
-	if mon <= 0 || mon >= 12 {
-		return
+	if mon < 0 || mon > 12 {
+		mon = 12
 	}
 	opt := applyOptions(options...)
 	spec := fmt.Sprintf("0 0 0 0 */%d *", mon)
 
 	if opt.Random {
-		spec = fmt.Sprintf("%d %d %d %d */%d *", rand.Intn(60), rand.Intn(60), rand.Intn(24), rand.Intn(29), mon)
+		spec = fmt.Sprintf("%d %d %d %d */%d *", rand.Intn(60), rand.Intn(60), rand.Intn(24), rand.Intn(29)+1, mon)
+	}
+
+	return s.AddJob(spec, f, options...)
+}
+
+// AddWeekJob 添加星期任务 1-7
+func (s *Cron) AddWeekJob(week int, f func(), options ...Option) (id int) {
+	if week < 1 || week > 7 {
+		week = 7
+	}
+	opt := applyOptions(options...)
+	spec := fmt.Sprintf("0 0 0 0 0 */%d", week)
+
+	if opt.Random {
+		spec = fmt.Sprintf("%d %d %d 0 0 */%d", rand.Intn(60), rand.Intn(60), rand.Intn(24), week)
 	}
 
 	return s.AddJob(spec, f, options...)
