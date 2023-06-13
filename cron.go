@@ -40,7 +40,7 @@ const (
 	ModeTimeFirst
 )
 
-type Option struct {
+type options struct {
 	// RunMode 运行模式
 	//   默认 ModeJobSerial
 	RunMode RunMode
@@ -57,25 +57,62 @@ type Option struct {
 	Recover bool // 默认 true
 }
 
-func (o Option) apply(o1 Option) Option {
-	o.RunMode = o1.RunMode
-	o.Immediately = o.Immediately || o1.Immediately
-	o.Random = o.Random || o1.Random
-	o.Recover = o.Recover || o1.Recover
-	return o
+type Option interface {
+	apply(*options)
 }
 
-var defaultOpt = Option{
+type _RunMode RunMode
+
+func (mode _RunMode) apply(opts *options) {
+	opts.RunMode = RunMode(mode)
+}
+
+func WithRunMode(mode RunMode) Option {
+	return _RunMode(mode)
+}
+
+type _Immediately bool
+
+func (i _Immediately) apply(opts *options) {
+	opts.Immediately = bool(i)
+}
+
+func WithImmediately(i bool) Option {
+	return _Immediately(i)
+}
+
+type _Random bool
+
+func (r _Random) apply(opts *options) {
+	opts.Random = bool(r)
+}
+
+func WithRandom(r bool) Option {
+	return _Random(r)
+}
+
+type _Recover bool
+
+func (r _Recover) apply(opts *options) {
+	opts.Recover = bool(r)
+}
+
+func WithRecover(r bool) Option {
+	return _Recover(r)
+}
+
+
+var defaultOpt = options{
 	RunMode:     ModeJobSerial,
 	Immediately: false,
 	Random:      false,
 	Recover:     true,
 }
 
-func applyOptions(opts ...Option) Option {
+func applyOptions(opts ...Option) options {
 	opt := defaultOpt
 	for _, o := range opts {
-		opt = opt.apply(o)
+		o.apply(&opt)
 	}
 
 	return opt
